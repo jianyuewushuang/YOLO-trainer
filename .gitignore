@@ -1,0 +1,8 @@
+.venv/
+build/
+build-cmake/
+runs/
+.ultralytics_cfg/
+logs/
+__pycache__/
+*.pyc
