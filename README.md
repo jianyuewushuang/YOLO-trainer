@@ -187,3 +187,13 @@ A：首次运行会从 GitHub 下载 COCO 预训练权重（约 5~6 MB，已缓�
 **Q：如何改数据集？**
 A：替换 `datasets/images/{train,val}` 与 `datasets/labels/{train,val}` 并更新
 `datasets/dataset.yaml`（`nc` 与 `names`），或用 `--data` 指向新的 yaml。
+
+## 11. License
+
+This project is licensed under the **PolyForm Noncommercial License 1.0.0**.
+
+- Free for personal study, hobby, academic research, non-profit & government organizations.
+- **Commercial use, corporate internal production deployment, paid SaaS, commercial bundling are strictly prohibited.**
+- If you need commercial licensing, contact: <jianyuewushuang@163.com>.
+
+See the full legal terms in [LICENSE](./LICENSE.md).
