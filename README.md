@@ -11,30 +11,30 @@
 ├── build.ps1                   # MinGW g++ 编译脚本（产物 build/yolo_train.exe）
 ├── CMakeLists.txt              # CMake 构建（备选：cmake -B build-cmake -G "MinGW Makefiles"）
 ├── engine/
-│   └── requirements.txt        # 训练引擎（Python）依赖清单
+│   └── requirements.txt        # Python依赖清单
 ├── src/                        # 全部源代码
-│   ├── main.cpp                # C++ CLI 入口与模式分发（train/export/doctor/download/list-models）
+│   ├── main.cpp                # C++ CLI 入口与模式分发
 │   ├── cli.hpp / cli.cpp       # 参数解析 + 交互式模型选择菜单
-│   ├── device.hpp/.cpp         # GPU 探测（nvidia-smi）
-│   ├── worker.hpp/.cpp         # 子进程执行（CreateProcess + 管道，实时捕获引擎输出）
-│   ├── logger.hpp/.cpp         # 带时间戳的日志（控制台 + 文件双写）
+│   ├── device.hpp/.cpp         # GPU 探测
+│   ├── worker.hpp/.cpp         # 子进程执行（
+│   ├── logger.hpp/.cpp         # 带时间戳的日志
 │   ├── workspace.hpp/.cpp      # 项目路径管理
-│   └── train_worker.py         # 训练引擎（Ultralytics）：train / val / export / check / download
-├── datasets/                   # 数据集（3000 训练 + 600 验证，12 类装甲板）
+│   └── train_worker.py         # 训练引擎（Ultralytics）
+├── datasets/                   # 数据集
 │   ├── dataset.yaml            # path 为相对路径，项目可整体迁移
 │   ├── images/{train,val}/
 │   └── labels/{train,val}/
-├── .venv/                      # <path\to\your\project> 独立虚拟环境（Python 3.11）
-├── .ultralytics_cfg/           # Ultralytics 配置目录（重定向，含预训练权重缓存）
+├── .venv/                      # 虚拟环境
+├── .ultralytics_cfg/           # Ultralytics 配置目录
 │   ├── weights/                #   yolov8n.pt / yolo11n.pt / yolo26n.pt（官方预训练权重）
 │   └── resolved_dataset.yaml   #   运行时生成的绝对路径数据集配置
 ├── weights/                    # 交付产物：每个模型一组 best.pt + best.onnx
 │   ├── YOLOv8n/{best.pt, best.onnx}
 │   ├── YOLO11n/{best.pt, best.onnx}
 │   └── YOLO26n/{best.pt, best.onnx}
-├── logs/                       # 训练日志（每次训练一个目录）
+├── logs/                       # 训练日志
 │   └── <模型>_<时间戳>/{train.log, metrics.json}
-├── runs/                       # Ultralytics 训练过程产物（曲线、混淆矩阵等）
+├── runs/                       # Ultralytics 训练过程产物
 └── build/                      # 编译产物 yolo_train.exe
 ```
 
