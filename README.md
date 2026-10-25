@@ -48,7 +48,7 @@
 | 依赖 | 说明 |
 | --- | --- |
 | Windows / Linux | 两端均支持，源码与脚本跨平台 |
-| Python 3.10+ | `setup.ps1` / `setup.sh` 会自动挑选（优先 3.11/3.12） |
+| Python 3.10+ **正式版** | `setup.sh` 自动挑选（优先 3.12，自动跳过 alpha/beta/rc） |
 | C++17 编译器 | Windows：MSYS2 UCRT64 g++；Linux：g++（`build-essential`） |
 | CMake（可选） | 第二种构建方式，build 脚本直接调 g++ 不依赖它 |
 | 网络 | 首次搭建需联网：pip 装依赖、GitHub 下载预训练权重 |
@@ -236,6 +236,18 @@ A：替换 `datasets/images/{train,val}` 与 `datasets/labels/{train,val}` 并�
 顺序查找（`.yml` 扩展名同样支持）；
 不指定 `--data` 时自动探测项目内 `datasets/` 下的配置（含 Roboflow 导出的
 `datasets/<数据集名>/data.yaml`）。
+
+**Q：训练报 `module 'sys' has no attribute 'get_int_max_str_digits'`？**
+A：虚拟环境用的是 Python **预发布版**（如 `3.11.0rc1`），该 API 要到 3.11.0rc2
+才引入，torch/ultralytics 在训练初始化时调用它会直接抛 AttributeError。
+用正式版重建环境：
+
+```bash
+./setup.sh --python /usr/bin/python3.12 --force
+```
+
+`setup.sh` 现在会自动跳过 alpha/beta/rc，显式指定预发布版会直接报错；
+`doctor` 也会在自检阶段给出明确提示，而不是等到训练中途失败。
 
 **Q：Linux 上提示 “externally-managed-environment” 或缺少 venv？**
 A：不要用系统 Python 直接装依赖，脚本会自动建 `.venv`。若建 venv 失败：

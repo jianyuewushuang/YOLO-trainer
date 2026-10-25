@@ -542,7 +542,28 @@ def cmd_export(args) -> int:
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+def python_env_error() -> str:
+    """检查解释器能否用于训练；可用返回空串，否则返回可读原因。
+
+    预发布版（alpha/beta/rc）缺少部分标准库 API。典型例子：3.11.0rc1 尚无
+    sys.get_int_max_str_digits（3.11.0rc2 才引入），torch/ultralytics 训练时
+    会抛 AttributeError，报错位置很深且难以理解，这里提前拦截。
+    """
+    v = sys.version_info
+    if v < (3, 10):
+        return f"训练引擎需要 Python >=3.10，当前 {sys.version.split()[0]}"
+    if v.releaselevel != "final":
+        return (f"训练引擎需要正式版 Python，当前 {sys.version.split()[0]} 为预发布版"
+                "（rc/beta 缺少 sys.get_int_max_str_digits 等标准库 API；"
+                "请用正式版重建虚拟环境：./setup.sh --python /usr/bin/python3.12 --force）")
+    return ""
+
+
 def main() -> int:
+    err = python_env_error()
+    if err:
+        return fail(err)
+
     p = argparse.ArgumentParser(description="YOLO 训练引擎（由 C++ 训练工具调用）")
     sub = p.add_subparsers(dest="cmd", required=True)
 

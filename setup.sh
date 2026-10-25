@@ -3,7 +3,7 @@
 # setup.sh —— 一键环境搭建（Linux / macOS）
 #
 # 步骤：
-#   1. 自动挑选合适的 Python（>=3.10，优先 3.11/3.12）
+#   1. 自动挑选合适的 Python（稳定版 >=3.10，排除 alpha/beta/rc；优先 3.12）
 #   2. 在项目内 .venv 创建独立虚拟环境
 #   3. 安装训练引擎依赖（engine/requirements.txt）
 #   4. 预下载三种模型的预训练权重（yolov8n / yolo11n / yolo26n）
@@ -32,7 +32,6 @@ cpu_torch=0
 usage() {
     sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --python)      python_bin="${2:-}"; shift 2 ;;
@@ -46,10 +45,28 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# 1. 挑选 Python 解释器（>=3.10；优先 3.11/3.12，与 ultralytics/torch 实测兼容）
+# 1. 挑选 Python 解释器
+#
+# 要求：>=3.10 且为正式发布版（releaselevel == final）。
+# 预发布版（alpha/beta/rc）不能用于训练：例如 3.11.0rc1 早于
+# sys.get_int_max_str_digits 的引入（3.11.0rc2），torch/ultralytics 训练时会
+# 直接抛 AttributeError。
 # ---------------------------------------------------------------------------
-py_ok() {
-    "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+# 可用则输出空串；否则输出不可用原因
+py_reject_reason() {
+    "$1" - <<'PY' 2>/dev/null
+import sys
+
+v = sys.version_info
+if v < (3, 10):
+    print(f"{sys.version.split()[0]} 版本过低（需 >=3.10）")
+elif v.releaselevel != "final":
+    print(f"{sys.version.split()[0]} 是预发布版（需正式版，rc/beta 缺少部分标准库 API）")
+PY
+}
+
+resolve_path() {
+    command -v "$1" 2>/dev/null || true
 }
 
 if [[ -z "$python_bin" && -n "${YOLO_TRAIN_PYTHON:-}" ]]; then
@@ -57,26 +74,39 @@ if [[ -z "$python_bin" && -n "${YOLO_TRAIN_PYTHON:-}" ]]; then
 fi
 
 if [[ -n "$python_bin" ]]; then
-    if ! command -v "$python_bin" >/dev/null 2>&1; then
+    # 显式指定的解释器：不可用时直接报错，不静默替换成别的版本
+    if [[ -z "$(resolve_path "$python_bin")" ]]; then
         echo "指定的 Python 不可执行: $python_bin" >&2
         exit 3
     fi
-    if ! py_ok "$python_bin"; then
-        echo "指定的 Python 版本过低（需 >=3.10）: $("$python_bin" --version 2>&1)" >&2
+    python_bin="$(resolve_path "$python_bin")"
+    reason="$(py_reject_reason "$python_bin")"
+    if [[ -n "$reason" ]]; then
+        echo "指定的 Python 不可用: $python_bin —— $reason" >&2
+        echo "请换成正式版 Python（如 python3.12）后重试：./setup.sh --python /usr/bin/python3.12 --force" >&2
         exit 3
     fi
 else
-    for cand in python3.12 python3.11 python3.10 python3; do
-        if command -v "$cand" >/dev/null 2>&1 && py_ok "$cand"; then
-            python_bin="$(command -v "$cand")"
-            break
+    # 3.12 优先（与 ultralytics/torch 实测最稳），3.13/3.14 作为备选
+    for cand in python3.12 python3.11 python3.10 python3.13 python3.14 python3; do
+        exe="$(resolve_path "$cand")"
+        [[ -z "$exe" ]] && continue
+        reason="$(py_reject_reason "$exe")"
+        if [[ -n "$reason" ]]; then
+            echo "跳过 $cand ($exe)：$reason" >&2
+            continue
         fi
+        python_bin="$exe"
+        break
     done
 fi
 
 if [[ -z "$python_bin" ]]; then
-    echo "未找到合适的 Python（需 >=3.10）。请安装后用 --python 指定。" >&2
-    echo "Ubuntu/Debian: sudo apt install python3 python3-venv python3-pip" >&2
+    echo "未找到可用的正式版 Python（需 >=3.10，且不是 alpha/beta/rc）。" >&2
+    echo "安装示例：" >&2
+    echo "  Ubuntu/Debian: sudo apt install python3.12 python3.12-venv" >&2
+    echo "  conda:         conda create -n yolo python=3.12 && conda activate yolo" >&2
+    echo "  uv:            uv python install 3.12 && ./setup.sh --python \"\$(uv python find 3.12)\"" >&2
     exit 3
 fi
 
