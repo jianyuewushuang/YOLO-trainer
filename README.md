@@ -111,20 +111,32 @@ python3 -m venv .venv
   [1] YOLOv8n    （Ultralytics YOLOv8 nano，约 3.2M 参数）
   [2] YOLO11n    （Ultralytics YOLO11 nano）
   [3] YOLO26n    （Ultralytics YOLO26 nano）
+  [4] 全部依次训练（YOLOv8n → YOLO11n → YOLO26n）
 ```
 
 随后显示训练配置摘要并请求确认（`Y` 开始 / `n` 取消）。
 脚本化场景请用命令行参数，例如：
 
 ```bash
+# 单个模型
 ./build/yolo_train train --model yolov8n --epochs 100 --imgsz 512 --batch 16
+
+# 三个模型依次训练：各自的训练/验证/导出/归档互不干扰
+./build/yolo_train train --model all --epochs 100
+
+# 只训练其中两个（逗号分隔，重复项自动去重）
+./build/yolo_train train --model yolov8n,yolo11n
 ```
+
+批量训练按输入顺序逐个执行：每个模型单独一个 `logs/<模型>_<时间戳>/` 日志目录、
+单独归档到 `weights/<模型>/`，全部结束后输出汇总表（成功数/失败数、各模型
+mAP、耗时）；某个模型失败不影响后续模型，整体退出码非 0。
 
 **常用参数：**
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `--model` | （菜单） | `yolov8n` / `yolo11n` / `yolo26n`（也接受 `YOLOv8n`、`yolov8n.pt`、`v8n` 等写法） |
+| `--model` | （菜单） | `yolov8n` / `yolo11n` / `yolo26n` / `all`；逗号分隔或重复 `--model` 可多选（也接受 `YOLOv8n`、`yolov8n.pt`、`v8n` 等写法） |
 | `--device` | `auto` | `auto`=有 GPU 用 GPU、无 GPU 用 CPU；也可强制 `cpu` 或 `0` |
 | `--epochs` | 100 | 训练轮数 |
 | `--imgsz` | 512 | 训练输入尺寸 |
@@ -132,7 +144,7 @@ python3 -m venv .venv
 | `--workers` | 自动 | DataLoader 进程数（自动 = min(8, CPU 核数)） |
 | `--val-imgsz` | 640 | 验证与 ONNX 导出尺寸 |
 | `--data` | 自动探测 | 数据集配置：可传 yaml 文件，也可传数据集目录（自动找 `dataset.yaml`/`data.yaml`） |
-| `--resume` | 关 | 从最近一次训练继续 |
+| `--resume` | 关 | 从最近一次训练继续（仅单模型训练支持） |
 | `--no-interactive` | 关 | 禁用交互菜单 |
 | `--root` | 自动 | 手动指定 <path\to\your\project> 根目录 |
 
@@ -181,8 +193,12 @@ logs/<模型>_<时间戳>/
 runs/detect/<模型>_<时间戳>/ # Ultralytics 过程产物
 ```
 
+批量训练（`--model all` 或多个模型）时，三个模型各自产生一套上述产物：
+`weights/YOLOv8n/`、`weights/YOLO11n/`、`weights/YOLO26n/`，
+以及三个独立的 `logs/<模型>_<时间戳>/` 目录，互不覆盖。
+
 日志格式：`[YYYY-MM-DD HH:MM:SS.mmm][tag] 内容`，tag 区分
-`config` / `device` / `engine`/ `main`]。
+`config` / `device` / `engine` / `main`。
 
 引擎与 C++ 之间通过 `__XXX__` 标记行通信.
 

@@ -338,6 +338,17 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
 static int cmd_export(const Workspace& ws, const Options& opt) {
     Logger& log = Logger::instance();
 
+    // export 一次只处理一个权重；all 这类批量写法在导出场景没有意义
+    if (opt.weights.empty()) {
+        bool spec_ok = true;
+        const auto models = parse_models(opt.model, &spec_ok);
+        if (!spec_ok || models.size() > 1) {
+            log.line("main", "export 模式一次只支持一个模型，请用 --model 指定单个模型"
+                             "（或用 --weights 指定 best.pt）");
+            return 2;
+        }
+    }
+
     fs::path src_pt = opt.weights;
     std::string dir_name;
     if (!src_pt.empty()) {
@@ -416,25 +427,22 @@ static int cmd_export(const Workspace& ws, const Options& opt) {
 // ---------------------------------------------------------------------------
 // train
 // ---------------------------------------------------------------------------
-static int cmd_train(const Workspace& ws, const Options& opt) {
-    Logger& log = Logger::instance();
+struct TrainOutcome {
+    int exit_code = 0;
+    std::string dir;      // 规范模型目录名：YOLOv8n
+    std::string device;   // 实际训练设备
+    std::string map50;
+    std::string map5095;
+    std::string seconds;
+};
 
-    // ---- 模型选择：命令行优先，否则交互菜单 ----
-    std::string canonical = canonical_model(opt.model);
-    bool menu_used = false;
-    if (canonical.empty()) {
-        if (opt.interactive) {
-            canonical = interactive_select_model();
-            menu_used = !canonical.empty();
-        }
-        if (canonical.empty()) {
-            log.line("main", "未指定有效模型（yolov8n / yolo11n / yolo26n），"
-                             "请用 --model 指定或通过交互菜单选择");
-            print_usage();
-            return 2;
-        }
-    }
-    std::string dir_name = model_dir_name(canonical);
+// 训练单个模型：训练 -> 验证 -> 导出 ONNX -> 归档产物
+static TrainOutcome train_one(const Workspace& ws, const Options& opt,
+                              const std::string& canonical, bool menu_used) {
+    TrainOutcome out;
+    out.dir = model_dir_name(canonical);
+    const std::string& dir_name = out.dir;
+    Logger& log = Logger::instance();
 
     // ---- 数据集配置：--data 优先，否则用项目内自动探测到的数据集 ----
     const fs::path data_yaml = resolve_data_yaml(ws, opt);
@@ -442,17 +450,20 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
     // ---- 环境预检 ----
     if (!ws.valid()) {
         log.line("main", "未找到项目根目录，可用 --root 指定");
-        return 3;
+        out.exit_code = 3;
+        return out;
     }
     if (!fs::exists(ws.venv_python)) {
         log.line("main", "未找到虚拟环境 Python：" + ws.venv_python.string() +
                              "，请先运行 " + std::string(kSetupScript));
-        return 3;
+        out.exit_code = 3;
+        return out;
     }
     if (data_yaml.empty() || !fs::is_regular_file(data_yaml)) {
         log.line("main", "数据集配置不存在: " + data_yaml_hint(opt) +
                              "（--data 可指定 yaml 文件或数据集目录）");
-        return 3;
+        out.exit_code = 3;
+        return out;
     }
 
     // ---- 交互模式下的参数确认 ----
@@ -472,7 +483,8 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
         if (std::getline(std::cin, answer)) {
             if (!answer.empty() && (answer[0] == 'n' || answer[0] == 'N')) {
                 log.line("main", "已取消");
-                return 0;
+                out.exit_code = 0;
+                return out;
             }
         }
     }
@@ -525,7 +537,8 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
         std::string err = find_marker(r.lines, "__ERROR__");
         log.line("main", "训练失败: " + (err.empty() ? std::string("引擎退出码 " +
                                             std::to_string(r.exit_code)) : err));
-        return 4;
+        out.exit_code = 4;
+        return out;
     }
 
     std::string run_dir = find_marker(r.lines, "__RUN_DIR__");
@@ -534,24 +547,27 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
     std::string metrics = find_marker(r.lines, "__METRICS_JSON__");
     if (best_pt.empty() || onnx.empty() || metrics.empty()) {
         log.line("main", "引擎输出缺少关键标记（best.pt / onnx / metrics）");
-        return 4;
+        out.exit_code = 4;
+        return out;
     }
 
     // ---- 归档产物到 weights/<模型>/ ----
     fs::path wdir = ws.weights / dir_name;
     if (!copy_artifact(fs::path(best_pt), wdir / "best.pt")) {
         log.line("main", "归档 best.pt 失败: " + best_pt);
-        return 5;
+        out.exit_code = 5;
+        return out;
     }
     if (!copy_artifact(fs::path(onnx), wdir / "best.onnx")) {
         log.line("main", "归档 best.onnx 失败: " + onnx);
-        return 5;
+        out.exit_code = 5;
+        return out;
     }
 
     // ---- metrics.json 落盘（引擎 JSON 原样保存） ----
     {
-        std::ofstream out(log_dir / "metrics.json", std::ios::out | std::ios::trunc);
-        out << metrics << "\n";
+        std::ofstream fout(log_dir / "metrics.json", std::ios::out | std::ios::trunc);
+        fout << metrics << "\n";
     }
 
     // ---- 汇总展示 ----
@@ -585,7 +601,105 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
     log.raw("  指标文件:   " + (log_dir / "metrics.json").string());
     if (!run_dir.empty()) log.raw("  过程产物:   " + run_dir);
     log.raw("===========================================");
-    return 0;
+
+    // 供批量训练汇总使用
+    if ((v = summary_get(kv, "device"))) out.device = *v;
+    if ((v = summary_get(kv, "mAP50"))) out.map50 = *v;
+    if ((v = summary_get(kv, "mAP50-95"))) out.map5095 = *v;
+    if ((v = summary_get(kv, "train_seconds"))) out.seconds = *v;
+    return out;
+}
+
+// 依次训练多个模型（--model all / a,b）
+static int cmd_train(const Workspace& ws, const Options& opt) {
+    Logger& log = Logger::instance();
+
+    // ---- 模型列表：命令行优先，否则交互菜单 ----
+    bool spec_ok = true;
+    std::string spec = opt.model;
+    std::vector<std::string> models = parse_models(spec, &spec_ok);
+    bool menu_used = false;
+    if (models.empty() && opt.interactive) {
+        spec = interactive_select_model();
+        menu_used = !spec.empty();
+        if (menu_used) models = parse_models(spec, &spec_ok);
+    }
+    if (!spec_ok || models.empty()) {
+        log.line("main", "未指定有效模型（yolov8n / yolo11n / yolo26n / all），"
+                         "请用 --model 指定或通过交互菜单选择");
+        print_usage();
+        return 2;
+    }
+    if (models.size() > 1 && opt.resume) {
+        log.line("main", "批量训练（多个模型）不支持 --resume，请先单独训练后再续训");
+        return 2;
+    }
+
+    // ---- 单模型：与原有行为一致（交互确认在 train_one 内）----
+    if (models.size() == 1) {
+        return train_one(ws, opt, models[0], menu_used).exit_code;
+    }
+
+    // ---- 批量依次训练 ----
+    const fs::path data_yaml = resolve_data_yaml(ws, opt);
+    if (opt.interactive) {
+        log.raw("");
+        log.raw("即将依次训练 " + std::to_string(models.size()) + " 个模型：");
+        for (std::size_t i = 0; i < models.size(); ++i) {
+            log.raw("  [" + std::to_string(i + 1) + "/" + std::to_string(models.size()) + "] " +
+                    model_dir_name(models[i]));
+        }
+        log.raw("  数据集:   " + (data_yaml.empty() ? std::string("（未找到）")
+                                                    : data_yaml.string()));
+        log.raw("  超参数:   epochs=" + std::to_string(opt.epochs) +
+                " imgsz=" + std::to_string(opt.imgsz) +
+                " batch=" + std::to_string(opt.batch));
+        std::printf("确认依次训练？[Y/n] ");
+        std::fflush(stdout);
+        std::string answer;
+        if (std::getline(std::cin, answer)) {
+            if (!answer.empty() && (answer[0] == 'n' || answer[0] == 'N')) {
+                log.line("main", "已取消");
+                return 0;
+            }
+        }
+    }
+
+    const std::time_t t0 = std::time(nullptr);
+    std::vector<TrainOutcome> results;
+    results.reserve(models.size());
+    int failed = 0;
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        log.raw("");
+        log.raw("========== 批量训练 [" + std::to_string(i + 1) + "/" +
+                std::to_string(models.size()) + "] " + model_dir_name(models[i]) + " ==========");
+        TrainOutcome r = train_one(ws, opt, models[i], false);
+        if (r.exit_code != 0) ++failed;
+        results.push_back(std::move(r));
+    }
+
+    // ---- 批量汇总 ----
+    const long total_seconds = static_cast<long>(std::time(nullptr) - t0);
+    log.raw("");
+    log.raw("================ 批量训练结果 ================");
+    for (const auto& r : results) {
+        std::string line = "  " + r.dir;
+        if (r.exit_code == 0) {
+            line += "  成功";
+            if (!r.device.empty()) line += "  设备=" + r.device;
+            if (!r.map50.empty()) line += "  mAP50=" + r.map50;
+            if (!r.map5095.empty()) line += "  mAP50-95=" + r.map5095;
+            if (!r.seconds.empty()) line += "  用时 " + r.seconds + "s";
+            line += "  -> weights/" + r.dir + "/";
+        } else {
+            line += "  失败（退出码 " + std::to_string(r.exit_code) + "）";
+        }
+        log.raw(line);
+    }
+    log.raw("  合计: 成功 " + std::to_string(models.size() - failed) + " / " +
+            std::to_string(models.size()) + "，总耗时 " + std::to_string(total_seconds) + " s");
+    log.raw("=============================================");
+    return failed == 0 ? 0 : 4;
 }
 
 // ---------------------------------------------------------------------------

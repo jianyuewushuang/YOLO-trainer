@@ -29,6 +29,41 @@ std::string model_dir_name(const std::string& canonical) {
     return "";
 }
 
+std::vector<std::string> parse_models(const std::string& raw, bool* ok) {
+    if (ok) *ok = true;
+    std::vector<std::string> models;
+
+    const std::string s = to_lower(raw);
+    // 空白与分隔符当作分隔，支持 "yolov8n,yolo11n" / "v8n yolo11n" / "all"
+    std::size_t start = 0;
+    while (start <= s.size()) {
+        std::size_t sep = s.find_first_of(",; \t", start);
+        const std::string token = s.substr(
+            start, sep == std::string::npos ? std::string::npos : sep - start);
+        if (!token.empty()) {
+            if (token == "all" || token == "*") {
+                for (const char* m : {"yolov8n", "yolo11n", "yolo26n"}) {
+                    if (std::find(models.begin(), models.end(), m) == models.end()) {
+                        models.push_back(m);
+                    }
+                }
+            } else {
+                const std::string c = canonical_model(token);
+                if (c.empty()) {
+                    if (ok) *ok = false;
+                    return {};
+                }
+                if (std::find(models.begin(), models.end(), c) == models.end()) {
+                    models.push_back(c);
+                }
+            }
+        }
+        if (sep == std::string::npos) break;
+        start = sep + 1;
+    }
+    return models;
+}
+
 static bool is_flag(const std::string& s) {
     return s.size() > 1 && s[0] == '-' && s[1] == '-';
 }
@@ -59,7 +94,9 @@ Options parse_args(int argc, char** argv) {
         } else if (k == "--mode") {
             o.mode = need("--mode");
         } else if (k == "--model") {
-            o.model = need("--model");
+            // 允许重复 --model：追加为逗号分隔列表（等价于 --model a,b）
+            const std::string v = need("--model");
+            o.model = o.model.empty() ? v : o.model + "," + v;
         } else if (k == "--device") {
             o.device = need("--device");
         } else if (k == "--data") {
@@ -109,13 +146,14 @@ void print_usage() {
         "用法：\n"
         "  yolo_train                        # 交互菜单选择模型后开始训练\n"
         "  yolo_train train --model yolov8n  # 命令行直接指定模型训练\n"
+        "  yolo_train train --model all      # 依次训练 YOLOv8n / YOLO11n / YOLO26n\n"
         "  yolo_train export --model yolov8n # 由 weights/YOLOv8n/best.pt 重新导出 ONNX\n"
         "  yolo_train doctor                 # 环境与数据集自检\n"
         "  yolo_train download              # 预下载三种模型的预训练权重\n"
         "  yolo_train list-models           # 查看模型与权重产物状态\n"
         "\n"
         "常用参数：\n"
-        "  --model   yolov8n | yolo11n | yolo26n  要训练的模型（每次训练前可自选）\n"
+        "  --model   yolov8n | yolo11n | yolo26n | all   要训练的模型（逗号分隔可多选）\n"
         "  --device  auto | cpu | 0 ...           训练设备，auto=有 GPU 用 GPU，否则 CPU\n"
         "  --epochs  N        训练轮数（默认 100，配合早停 patience=30）\n"
         "  --imgsz   N        训练输入尺寸（默认 512）\n"
@@ -140,7 +178,8 @@ std::string interactive_select_model() {
         "  [1] YOLOv8n    （Ultralytics YOLOv8 nano，约 3.2M 参数）\n"
         "  [2] YOLO11n    （Ultralytics YOLO11 nano）\n"
         "  [3] YOLO26n    （Ultralytics YOLO26 nano）\n"
-        "请输入编号 [1-3]（或直接输入模型名，Ctrl+C 取消）：");
+        "  [4] 全部依次训练（YOLOv8n → YOLO11n → YOLO26n）\n"
+        "请输入编号 [1-4]（或直接输入模型名，Ctrl+C 取消）：");
     std::fflush(stdout);
 
     std::string line;
@@ -153,5 +192,7 @@ std::string interactive_select_model() {
     if (line == "1") return "yolov8n";
     if (line == "2") return "yolo11n";
     if (line == "3") return "yolo26n";
+    if (line == "4") return "all";
+    if (line == "all" || line == "全部") return "all";
     return canonical_model(line);
 }
