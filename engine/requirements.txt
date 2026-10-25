@@ -1,10 +1,15 @@
-# train_project 训练引擎依赖（Python 3.11，Windows 实测版本）
-# 安装： .venv\Scripts\python.exe -m pip install -r engine\requirements.txt
+# YOLO 训练引擎依赖（Python 3.10+）
+# 安装：
+#   Windows: .venv\Scripts\python.exe -m pip install -r engine\requirements.txt
+#   Linux:   .venv/bin/python -m pip install -r engine/requirements.txt
+#            （或直接 ./setup.sh，无 GPU 时加 --cpu 安装 CPU 版 torch）
 #
 # 说明：
-#   - PyPI 上的 torch Windows  wheel 为 CPU 版；有 NVIDIA GPU 的机器可到
+#   - Windows：PyPI 上的 torch wheel 为 CPU 版；有 NVIDIA GPU 的机器可到
 #     https://pytorch.org/get-started/locally/ 安装对应 CUDA 版本后重装 torch，
 #     训练工具会自动检测并使用 GPU（--device auto）。
+#   - Linux：PyPI 的 torch wheel 自带 CUDA 运行时（体积大）。没有 NVIDIA GPU
+#     时建议用 ./setup.sh --cpu 从 PyTorch CPU 索引安装，节省磁盘与内存。
 #   - 版本与父项目（RMquestion）保持一致，保证训练质量口径统一。
 
 ultralytics==8.4.171      # YOLOv8 / YOLO11 / YOLO26 训练、验证、ONNX 导出框架
@@ -16,3 +21,4 @@ PyYAML==6.0.3             # dataset.yaml 解析
 psutil>=7.0               # 系统信息采集
 onnx==1.23.1              # ONNX 模型读写（导出 simplify）
 onnxslim>=0.1.0           # ONNX 图简化（导出后处理，缺失时自动回退 onnx simplify）
+onnxruntime>=1.20         # 导出后校验 ONNX（缺失时 ultralytics 会在导出时联网自动安装）

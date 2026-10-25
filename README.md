@@ -1,22 +1,23 @@
 # C++ YOLO 训练工具
 
 用C++和python进行YOLOv8, YOLO11n和YOLO26nd的训练，在GPU可用时会优先使用GPU。
+支持 Windows 与 Linux（源码、构建脚本、Python 引擎均已跨平台）。
 
 ## 2. 目录结构
 
 ```
 <path\to\your\project>/
 ├── README.md                   # 本文档
-├── setup.ps1                   # 一键环境搭建（建 .venv + 装依赖 + 预下载权重 + 编译）
-├── build.ps1                   # MinGW g++ 编译脚本（产物 build/yolo_train.exe）
-├── CMakeLists.txt              # CMake 构建（备选：cmake -B build-cmake -G "MinGW Makefiles"）
+├── setup.ps1 / setup.sh        # 一键环境搭建（建 .venv + 装依赖 + 预下载权重 + 编译）
+├── build.ps1 / build.sh        # 编译脚本（产物 build/yolo_train[.exe]）
+├── CMakeLists.txt              # CMake 构建（备选，全平台通用）
 ├── engine/
 │   └── requirements.txt        # Python依赖清单
 ├── src/                        # 全部源代码
 │   ├── main.cpp                # C++ CLI 入口与模式分发
 │   ├── cli.hpp / cli.cpp       # 参数解析 + 交互式模型选择菜单
 │   ├── device.hpp/.cpp         # GPU 探测
-│   ├── worker.hpp/.cpp         # 子进程执行（
+│   ├── worker.hpp/.cpp         # 子进程执行（Windows 管道 / POSIX fork+pipe）
 │   ├── logger.hpp/.cpp         # 带时间戳的日志
 │   ├── workspace.hpp/.cpp      # 项目路径管理
 │   └── train_worker.py         # 训练引擎（Ultralytics）
@@ -35,21 +36,45 @@
 ├── logs/                       # 训练日志
 │   └── <模型>_<时间戳>/{train.log, metrics.json}
 ├── runs/                       # Ultralytics 训练过程产物
-└── build/                      # 编译产物 yolo_train.exe
+└── build/                      # 编译产物 yolo_train（Windows 为 yolo_train.exe）
 ```
+
+数据集配置支持两种布局，启动时自动探测：
+`datasets/dataset.yaml`（推荐），或 Roboflow 导出的 `datasets/<数据集名>/data.yaml`。
 
 ## 3. 环境要求
 
 | 依赖 | 说明 |
 | --- | --- |
-| Windows | 开发与实测平台 |
-| Python 3.10 ~ 3.12 | `setup.ps1` 会自动挑选（测试时使用 3.11.9） |
-| MSYS2 UCRT64 g++ | 编译 C++ 工具（`C:\msys64\ucrt64\bin\g++.exe`） |
-| CMake（可选） | 第二种构建方式，`build.ps1` 直接调 g++ 不依赖它 |
+| Windows / Linux | 两端均支持，源码与脚本跨平台 |
+| Python 3.10+ | `setup.ps1` / `setup.sh` 会自动挑选（优先 3.11/3.12） |
+| C++17 编译器 | Windows：MSYS2 UCRT64 g++；Linux：g++（`build-essential`） |
+| CMake（可选） | 第二种构建方式，build 脚本直接调 g++ 不依赖它 |
 | 网络 | 首次搭建需联网：pip 装依赖、GitHub 下载预训练权重 |
 | NVIDIA GPU（可选） | 有则自动用 GPU 训练；无则用 CPU |
 
 ## 4. 快速开始
+
+### 4.1 Linux
+
+```bash
+cd <path/to/your/project>
+
+# 一键搭建（无 NVIDIA GPU 时加 --cpu，安装体积小得多的 CPU 版 torch）
+./setup.sh            # 有 GPU
+./setup.sh --cpu      # 无 GPU
+
+# 自检 + 训练
+./build/yolo_train doctor
+./build/yolo_train                                  # 交互菜单选择模型
+./build/yolo_train train --model yolo26n --epochs 100
+```
+
+Ubuntu/Debian 若提示缺少 venv：`sudo apt install python3-venv python3-pip build-essential`。
+
+只编译不建环境：`./build.sh`（可用 `CXX=clang++ ./build.sh` 指定编译器）。
+
+### 4.2 Windows
 
 在 **PowerShell** 中执行：
 
@@ -57,31 +82,21 @@
 powershell -ExecutionPolicy Bypass -File <path\to\your\project>\setup.ps1
 ```
 
-成功后自检并开始训练：
+之后把第 5 节的命令前缀换成 `build\yolo_train.exe` 即可，例如
+`build\yolo_train.exe doctor`、`build\yolo_train.exe train --model yolo26n`。
 
-```powershell
-# 环境自检（Python/torch/ultralytics/数据集/权重缓存/GPU）
-powershell -ExecutionPolicy Bypass -File <path\to\your\project>\build\yolo_train.exe doctor
+### 手动分步（不用 setup 脚本时）
 
-# 交互式训练：菜单选择模型 → 确认参数 → 一键训练
-powershell -ExecutionPolicy Bypass -File <path\to\your\project>\build\yolo_train.exe
-
-# 或命令行直接指定模型
-powershell -ExecutionPolicy Bypass -File <path\to\your\project>\build\yolo_train.exe train --model yolo26n
-```
-
-### 手动分步（不用 setup.ps1 时）
-
-```powershell
-# 1. 建虚拟环境并装依赖（用任意 Python 3.10~3.12）
-C:\...\python.exe -m venv <path\to\your\project>\.venv
-<path\to\your\project>\.venv\Scripts\python.exe -m pip install -r <path\to\your\project>\engine\requirements.txt
+```bash
+# 1. 建虚拟环境并装依赖（Python 3.10+）
+python3 -m venv .venv
+.venv/bin/python -m pip install -r engine/requirements.txt      # Windows: .venv\Scripts\python.exe
 
 # 2. 预下载预训练权重（可选，训练时也会自动下载）
-<path\to\your\project>\.venv\Scripts\python.exe -X utf8 <path\to\your\project>\src\train_worker.py download
+.venv/bin/python -X utf8 src/train_worker.py download
 
 # 3. 编译
-powershell -ExecutionPolicy Bypass -File <path\to\your\project>\build.ps1
+./build.sh                                                      # Windows: build.ps1
 ```
 
 ## 5. 使用说明
@@ -100,8 +115,8 @@ powershell -ExecutionPolicy Bypass -File <path\to\your\project>\build.ps1
 随后显示训练配置摘要并请求确认（`Y` 开始 / `n` 取消）。
 脚本化场景请用命令行参数，例如：
 
-```powershell
-build\yolo_train.exe train --model yolov8n --epochs 100 --imgsz 512 --batch 16
+```bash
+./build/yolo_train train --model yolov8n --epochs 100 --imgsz 512 --batch 16
 ```
 
 **常用参数：**
@@ -136,20 +151,20 @@ build\yolo_train.exe train --model yolov8n --epochs 100 --imgsz 512 --batch 16
 
 ### 5.2 重新导出 ONNX
 
-```powershell
-build\yolo_train.exe export --model yolo26n        # 用 weights/YOLO26n/best.pt
-build\yolo_train.exe export --weights path\to\best.pt --val-imgsz 640
+```bash
+./build/yolo_train export --model yolo26n          # 用 weights/YOLO26n/best.pt
+./build/yolo_train export --weights path/to/best.pt --val-imgsz 640
 ```
 
 ONNX 导出到 best.pt 同目录。
 
 ### 5.3 其他模式
 
-```powershell
-build\yolo_train.exe doctor        # 环境与数据集自检
-build\yolo_train.exe download      # 预下载三种预训练权重
-build\yolo_train.exe list-models   # 查看模型与权重产物状态
-build\yolo_train.exe --help        # 完整帮助
+```bash
+./build/yolo_train doctor        # 环境与数据集自检
+./build/yolo_train download      # 预下载三种预训练权重
+./build/yolo_train list-models   # 查看模型与权重产物状态
+./build/yolo_train --help        # 完整帮助
 ```
 
 ## 6. 输出布局与日志
@@ -172,11 +187,14 @@ runs/detect/<模型>_<时间戳>/ # Ultralytics 过程产物
 
 ## 7. GPU / CPU 说明
 
-- 工具启动时用 `nvidia-smi` 预探测并在日志中记录 GPU 型号；
-- PyPI 上的 torch Windows 包为 CPU 版。有 NVIDIA GPU 的机器如需 CUDA 加速：
+- 工具启动时用 `nvidia-smi` 预探测并在日志中记录 GPU 型号（命令不存在或退出码非 0 即判定为 CPU 训练）；
+- Windows：PyPI 上的 torch 包为 CPU 版。有 NVIDIA GPU 的机器如需 CUDA 加速：
   1. 到 <https://pytorch.org/get-started/locally/> 安装对应 CUDA 版 torch；
   2. 或在 `.venv` 中执行 `pip install torch==2.14.1 --index-url <CUDA 索引>`（按 PyTorch 官网指引）；
   3. 重新运行 `doctor` 自检，确认 `cuda=True` 后照常训练即可，代码无需改动。
+- Linux：PyPI 的 torch wheel 自带 CUDA 运行时；无 NVIDIA GPU 时用
+  `./setup.sh --cpu` 安装 CPU 版（体积小、启动快）。有 GPU 但需要特定 CUDA
+  版本时，同样按 PyTorch 官网指引重装 torch。
 
 ## 10. 常见问题
 
@@ -187,6 +205,15 @@ A：首次运行会从 GitHub 下载 COCO 预训练权重（约 5~6 MB，已缓�
 **Q：如何改数据集？**
 A：替换 `datasets/images/{train,val}` 与 `datasets/labels/{train,val}` 并更新
 `datasets/dataset.yaml`（`nc` 与 `names`），或用 `--data` 指向新的 yaml。
+也兼容 Roboflow 导出的 `datasets/<数据集名>/data.yaml`（启动时自动探测）。
+
+**Q：Linux 上提示 “externally-managed-environment” 或缺少 venv？**
+A：不要用系统 Python 直接装依赖，脚本会自动建 `.venv`。若建 venv 失败：
+`sudo apt install python3-venv python3-pip`。
+
+**Q：日志/中文输出乱码？**
+A：Linux/macOS 默认 UTF-8；Windows 由程序切到 UTF-8 代码页。若在旧版 Windows
+控制台仍有乱码，改用 Windows Terminal 或执行 `chcp 65001`。
 
 ## 11. License
 

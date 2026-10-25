@@ -3,7 +3,7 @@
 """
 train_worker.py —— YOLO 训练引擎（Ultralytics 后端）
 =====================================================================
-本脚本由 train_project 的 C++ 训练工具（build/yolo_train.exe）调用，
+本脚本由项目的 C++ 训练工具（build/yolo_train）调用，
 负责真正的训练 / 验证 / ONNX 导出；C++ 侧负责模型选择、设备检测、
 流程编排、日志落盘与产物归档。
 
@@ -27,6 +27,7 @@ train_worker.py —— YOLO 训练引擎（Ultralytics 后端）
 import argparse
 import json
 import os
+import posixpath
 import shutil
 import sys
 import time
@@ -44,15 +45,31 @@ os.environ.setdefault("YOLO_CONFIG_DIR", str(CFG_DIR))
 
 
 def _ensure_arial_font() -> None:
-    """Ultralytics 绘图需要 Arial.ttf；缺失时从系统字体复制，避免联网下载。"""
+    """Ultralytics 绘图需要 Arial.ttf；缺失时从系统字体复制，避免联网下载。
+
+    跨平台候选：Windows Arial、Linux DejaVu/Liberation、macOS Arial，
+    最后回退到 matplotlib 自带的 DejaVuSans，保证无网络环境也能标注。
+    """
     dst = CFG_DIR / "Arial.ttf"
     if dst.exists() and dst.stat().st_size > 0:
         return
     for src in (r"C:\Windows\Fonts\arial.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf"):
         if Path(src).exists():
             shutil.copy(src, dst)
             return
+    try:  # 兜底：matplotlib 自带字体
+        import matplotlib
+        cand = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
+        if cand.exists():
+            shutil.copy(cand, dst)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 _ensure_arial_font()
@@ -140,26 +157,94 @@ def fail(msg: str) -> int:
 # ---------------------------------------------------------------------------
 # 数据集
 # ---------------------------------------------------------------------------
+def _resolve_split_dir(base: Path, yaml_dir: Path, rel: str) -> Path:
+    """把 dataset.yaml 中的 train/val 相对路径解析为绝对目录。
+
+    兼容两种常见布局：
+      * 标准布局：yaml 含 path: <数据集根>，train: images/train
+      * Roboflow 导出：yaml 无 path，train: ../train/images
+    解析顺序：<path>/<rel> -> <yaml 目录>/<rel> -> <yaml 目录>/<去掉前导 ../ 的 rel>
+    """
+    rel = str(rel).replace("\\", "/")
+    cands = [base / rel, yaml_dir / rel]
+    norm = posixpath.normpath(rel)
+    while norm.startswith("../"):
+        norm = norm[len("../"):]
+    cands.append(yaml_dir / norm)
+    for c in cands:
+        try:
+            if c.is_dir():
+                return c.resolve()
+        except OSError:
+            continue
+    return base / rel
+
+
+def _labels_dir_for(img_dir: Path) -> Path:
+    """由图片目录推标签目录：把路径中最后一个 images 段替换为 labels。
+
+    兼容 images/train -> labels/train 与 train/images -> train/labels 两种结构。
+    """
+    parts = list(img_dir.parts)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == "images":
+            parts[i] = "labels"
+            return Path(*parts)
+    return img_dir / "labels"
+
+
 def load_dataset_info(yaml_path: Path) -> dict:
-    """读取 dataset.yaml 并统计图片/标签数量；path 相对路径按 yaml 目录解析。"""
+    """读取 dataset.yaml 并统计图片/标签数量；相对路径按 yaml 所在目录解析。"""
     import yaml
 
     with open(yaml_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
+    yaml_dir = yaml_path.parent
     base = Path(data.get("path", "."))
     if not base.is_absolute():
-        base = (yaml_path.parent / base).resolve()
+        base = (yaml_dir / base).resolve()
     data["path"] = str(base)
 
     stats = {}
     for split in ("train", "val"):
-        img_dir = base / data.get(split, f"images/{split}")
-        lbl_dir = base / "labels" / split
-        n_img = sum(1 for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS) \
-            if img_dir.is_dir() else 0
-        n_lbl = sum(1 for _ in lbl_dir.glob("*.txt")) if lbl_dir.is_dir() else 0
+        raw = data.get(split, f"images/{split}")
+        if isinstance(raw, (list, tuple)):
+            dirs = [_resolve_split_dir(base, yaml_dir, r) for r in raw]
+            img_dir = dirs[0] if dirs else base / f"images/{split}"
+            # 写回绝对路径，保证训练时不受相对路径歧义影响
+            data[split] = [str(d) for d in dirs]
+            n_img = sum(1 for d in dirs if d.is_dir()
+                        for p in d.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+            n_lbl = sum(1 for d in dirs
+                        for lb in [_labels_dir_for(d)] if lb.is_dir()
+                        for _ in lb.glob("*.txt"))
+        else:
+            img_dir = _resolve_split_dir(base, yaml_dir, raw)
+            data[split] = str(img_dir)
+            n_img = sum(1 for p in img_dir.iterdir()
+                        if p.suffix.lower() in IMAGE_EXTS) if img_dir.is_dir() else 0
+            lbl_dir = _labels_dir_for(img_dir)
+            n_lbl = sum(1 for _ in lbl_dir.glob("*.txt")) if lbl_dir.is_dir() else 0
         stats[split] = {"images": n_img, "labels": n_lbl,
-                        "image_dir": str(img_dir), "label_dir": str(lbl_dir)}
+                        "image_dir": str(img_dir),
+                        "label_dir": str(_labels_dir_for(img_dir))}
+
+    # test 为可选划分：解析不到实际目录时移除，避免把无效相对路径传给 ultralytics
+    if "test" in data:
+        raw = data["test"]
+        if isinstance(raw, (list, tuple)):
+            dirs = [d for d in (_resolve_split_dir(base, yaml_dir, r) for r in raw) if d.is_dir()]
+            if dirs:
+                data["test"] = [str(d) for d in dirs]
+            else:
+                data.pop("test")
+        else:
+            d = _resolve_split_dir(base, yaml_dir, raw)
+            if d.is_dir():
+                data["test"] = str(d)
+            else:
+                data.pop("test")
+
     return {"data": data, "stats": stats,
             "nc": int(data.get("nc", 0)), "names": data.get("names", [])}
 

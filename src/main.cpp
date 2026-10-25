@@ -12,7 +12,7 @@
 //   download    预下载预训练权重
 //   list-models 查看模型与权重产物状态
 //
-// 产物布局（均在 train_project/ 内）：
+// 产物布局（均在项目根目录内）：
 //   weights/<模型>/{best.pt,best.onnx}
 //   logs/<模型>_<时间戳>/{train.log,metrics.json}
 //   runs/detect/<实验名>/            Ultralytics 训练过程产物
@@ -23,10 +23,14 @@
 #include "worker.hpp"
 #include "workspace.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -39,16 +43,98 @@ namespace fs = std::filesystem;
 static const char* kVersion = "1.0.0";
 static const char* const kSupportedModels[] = {"yolov8n", "yolo11n", "yolo26n"};
 
+// 平台相关的提示文案（提示用户运行哪个脚本）
+#ifdef _WIN32
+static const char* const kSetupScript = "setup.ps1";
+#else
+static const char* const kSetupScript = "setup.sh";
+#endif
+
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
 static std::string now_dir_stamp() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
+    const std::time_t t = std::time(nullptr);
+    std::tm tmv{};
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
     char buf[32] = {0};
     std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d",
-                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     return buf;
+}
+
+// 当前可执行文件路径：优先系统接口，其次 argv[0]，最后当前目录
+static fs::path self_exe_path(const char* argv0) {
+    std::error_code ec;
+#ifdef _WIN32
+    std::vector<char> buf(1024);
+    for (;;) {
+        const DWORD n = GetModuleFileNameA(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (n == 0) break;
+        if (n < buf.size() - 1) return fs::path(std::string(buf.data(), n));
+        buf.resize(buf.size() * 2);
+    }
+#else
+    // Linux：/proc/self/exe 是权威路径（可处理从 PATH 调用、符号链接等情况）
+    fs::path p = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec) return p;
+#endif
+    if (argv0 && *argv0) {
+        fs::path p = fs::weakly_canonical(fs::path(argv0), ec);
+        if (!ec) return p;
+    }
+    return fs::current_path();
+}
+
+// 在 PATH 中查找可执行文件（跨平台），未找到返回空串
+static std::string find_in_path(const std::string& name) {
+    std::error_code ec;
+#ifdef _WIN32
+    // MSYS2 UCRT64 / CMake 常见安装位置
+    const std::vector<std::string> extra = {
+        "C:\\msys64\\ucrt64\\bin\\",
+        "C:\\msys64\\mingw64\\bin\\",
+        "C:\\Program Files\\CMake\\bin\\",
+    };
+    for (const auto& dir : extra) {
+        fs::path cand = fs::path(dir) / (name + ".exe");
+        if (fs::is_regular_file(cand, ec)) return cand.string();
+    }
+    const char sep = ';';
+    const std::vector<std::string> exts = {"", ".exe"};
+#else
+    const char sep = ':';
+    const std::vector<std::string> exts = {""};
+#endif
+    const char* env = std::getenv("PATH");
+    if (!env) return "";
+    const std::string paths = env;
+    std::size_t pos = 0;
+    while (pos <= paths.size()) {
+        const std::size_t next = paths.find(sep, pos);
+        const std::string dir = paths.substr(
+            pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (!dir.empty()) {
+            for (const auto& ext : exts) {
+                fs::path cand = fs::path(dir) / (name + ext);
+                if (fs::is_regular_file(cand, ec)) return cand.string();
+            }
+        }
+        if (next == std::string::npos) break;
+        pos = next + 1;
+    }
+    return "";
+}
+
+// 数据集配置：--data 优先，否则用项目内自动探测到的数据集
+static fs::path resolve_data_yaml(const Workspace& ws, const Options& opt) {
+    if (!opt.data.empty()) return fs::path(opt.data);
+    return ws.data_yaml;
 }
 
 // 查找以 prefix 开头的标记行，返回其载荷（不含前缀）
@@ -126,7 +212,7 @@ static int cmd_download(const Workspace& ws, const Options& opt) {
     Logger& log = Logger::instance();
     if (!fs::exists(ws.venv_python)) {
         log.line("main", "未找到虚拟环境 Python：" + ws.venv_python.string() +
-                             "，请先运行 setup.ps1");
+                             "，请先运行 " + std::string(kSetupScript));
         return 3;
     }
     log.line("main", "预下载预训练权重（yolov8n / yolo11n / yolo26n）...");
@@ -145,7 +231,6 @@ static int cmd_download(const Workspace& ws, const Options& opt) {
 // doctor
 // ---------------------------------------------------------------------------
 static int cmd_doctor(const Workspace& ws, const Options& opt) {
-    (void)opt;  // 预留：后续可加 --data 等自检范围过滤
     Logger& log = Logger::instance();
     int problems = 0;
 
@@ -155,28 +240,31 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
     if (ws.valid()) {
         log.line("doctor", "项目根目录: " + ws.root.string() + "  [OK]");
     } else {
-        log.line("doctor", "未找到 train_project 根目录（需含 datasets/dataset.yaml 与 "
-                           "src/train_worker.py），可用 --root 指定  [FAIL]");
+        log.line("doctor", "未找到项目根目录（需含 src/train_worker.py 与 "
+                           "datasets/dataset.yaml 或 datasets/*/data.yaml），"
+                           "可用 --root 指定  [FAIL]");
         return 3;
     }
 
     // 2. 编译工具链（可选）
-    if (fs::exists("C:\\msys64\\ucrt64\\bin\\g++.exe")) {
-        log.line("doctor", "MinGW g++: C:\\msys64\\ucrt64\\bin\\g++.exe  [OK]");
+    const std::string gxx = find_in_path("g++");
+    if (!gxx.empty()) {
+        log.line("doctor", "C++ 编译器 g++: " + gxx + "  [OK]");
     } else {
-        log.line("doctor", "MinGW g++ 未找到（编译 yolo_train.exe 需要 MSYS2 UCRT64）  [WARN]");
+        log.line("doctor", "未找到 g++（编译 yolo_train 需要 C++17 编译器）  [WARN]");
     }
-    if (fs::exists("C:\\Program Files\\CMake\\bin\\cmake.exe")) {
-        log.line("doctor", "CMake: C:\\Program Files\\CMake\\bin\\cmake.exe  [OK]");
+    const std::string cmake = find_in_path("cmake");
+    if (!cmake.empty()) {
+        log.line("doctor", "CMake: " + cmake + "  [OK]");
     } else {
-        log.line("doctor", "CMake 未找到（可选，build.ps1 直接调 g++ 不依赖它）  [WARN]");
+        log.line("doctor", "CMake 未找到（可选，build 脚本直接调 g++ 不依赖它）  [WARN]");
     }
 
     // 3. 虚拟环境与引擎脚本
     if (fs::exists(ws.venv_python)) {
         log.line("doctor", "虚拟环境: " + ws.venv_python.string() + "  [OK]");
     } else {
-        log.line("doctor", "虚拟环境缺失，请先运行 setup.ps1  [FAIL]");
+        log.line("doctor", "虚拟环境缺失，请先运行 " + std::string(kSetupScript) + "  [FAIL]");
         ++problems;
     }
     if (fs::exists(ws.worker)) {
@@ -185,17 +273,19 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
         log.line("doctor", "训练引擎缺失: " + ws.worker.string() + "  [FAIL]");
         ++problems;
     }
-    if (fs::exists(ws.data_yaml)) {
-        log.line("doctor", "数据集配置: " + ws.data_yaml.string() + "  [OK]");
+    const fs::path data_yaml = resolve_data_yaml(ws, opt);
+    if (fs::exists(data_yaml)) {
+        log.line("doctor", "数据集配置: " + data_yaml.string() + "  [OK]");
     } else {
-        log.line("doctor", "数据集配置缺失: " + ws.data_yaml.string() + "  [FAIL]");
+        log.line("doctor", "数据集配置缺失: " + data_yaml.string() + "  [FAIL]");
         ++problems;
     }
 
     // 4. 引擎自检（Python/torch/ultralytics/数据集统计/权重缓存）
     if (fs::exists(ws.venv_python) && fs::exists(ws.worker)) {
         RunResult r = run_process(ws.venv_python,
-                                  {"-u", "-X", "utf8", ws.worker.string(), "check"},
+                                  {"-u", "-X", "utf8", ws.worker.string(), "check",
+                                   "--data", data_yaml.string()},
                                   "doctor");
         std::string err = find_marker(r.lines, "__ERROR__");
         if (r.exit_code != 0 || !err.empty()) {
@@ -219,7 +309,7 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
     log.raw("====================================================");
     if (problems > 0) {
         log.line("doctor", "自检完成：发现 " + std::to_string(problems) +
-                               " 个问题，请先运行 setup.ps1 修复");
+                               " 个问题，请先运行 " + std::string(kSetupScript) + " 修复");
         return 3;
     }
     log.line("doctor", "自检完成：一切就绪，可以开始训练");
@@ -262,7 +352,7 @@ static int cmd_export(const Workspace& ws, const Options& opt) {
 
     if (!fs::exists(ws.venv_python)) {
         log.line("main", "未找到虚拟环境 Python：" + ws.venv_python.string() +
-                             "，请先运行 setup.ps1");
+                             "，请先运行 " + std::string(kSetupScript));
         return 3;
     }
 
@@ -330,18 +420,21 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
     }
     std::string dir_name = model_dir_name(canonical);
 
+    // ---- 数据集配置：--data 优先，否则用项目内自动探测到的数据集 ----
+    const fs::path data_yaml = resolve_data_yaml(ws, opt);
+
     // ---- 环境预检 ----
     if (!ws.valid()) {
-        log.line("main", "未找到 train_project 根目录，可用 --root 指定");
+        log.line("main", "未找到项目根目录，可用 --root 指定");
         return 3;
     }
     if (!fs::exists(ws.venv_python)) {
         log.line("main", "未找到虚拟环境 Python：" + ws.venv_python.string() +
-                             "，请先运行 setup.ps1");
+                             "，请先运行 " + std::string(kSetupScript));
         return 3;
     }
-    if (!fs::exists(ws.data_yaml)) {
-        log.line("main", "数据集配置不存在: " + ws.data_yaml.string());
+    if (!fs::exists(data_yaml)) {
+        log.line("main", "数据集配置不存在: " + data_yaml.string());
         return 3;
     }
 
@@ -351,7 +444,7 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
         log.raw("训练配置：");
         log.raw("  模型:     " + dir_name + "（COCO 预训练迁移学习）");
         log.raw("  设备:     auto（有 GPU 用 GPU，无 GPU 用 CPU）");
-        log.raw("  数据集:   " + ws.data_yaml.string());
+        log.raw("  数据集:   " + data_yaml.string());
         log.raw("  超参数:   epochs=" + std::to_string(opt.epochs) +
                 " imgsz=" + std::to_string(opt.imgsz) +
                 " batch=" + std::to_string(opt.batch) +
@@ -378,7 +471,7 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
     log.raw("============================================================");
     log.line("config", "项目根目录: " + ws.root.string());
     log.line("config", "模型: " + canonical + ".pt（COCO 预训练迁移学习）");
-    log.line("config", "数据集: " + ws.data_yaml.string());
+    log.line("config", "数据集: " + data_yaml.string());
     log.line("config", "设备策略: " + opt.device + "（有 GPU 优先 GPU，无 GPU 用 CPU）");
     log.line("config", "超参数: epochs=" + std::to_string(opt.epochs) +
                 " imgsz=" + std::to_string(opt.imgsz) +
@@ -400,7 +493,7 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
         "-u", "-X", "utf8", ws.worker.string(),
         "train",
         "--model", canonical + ".pt",
-        "--data", ws.data_yaml.string(),
+        "--data", data_yaml.string(),
         "--device", opt.device,
         "--epochs", std::to_string(opt.epochs),
         "--imgsz", std::to_string(opt.imgsz),
@@ -482,9 +575,11 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
 // main
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
-    // 控制台与子进程统一 UTF-8，保证中文日志不乱码
+#ifdef _WIN32
+    // 控制台与子进程统一 UTF-8，保证中文日志不乱码（Linux/macOS 默认即 UTF-8）
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+#endif
 
     Options opt = parse_args(argc, argv);
     if (opt.show_help) {
@@ -492,12 +587,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    fs::path exe = (argc > 0 && argv[0] && argv[0][0]) ? fs::path(argv[0]) : fs::current_path();
-    Workspace ws = Workspace::discover(exe, opt.root_override);
+    Workspace ws = Workspace::discover(self_exe_path(argc > 0 ? argv[0] : nullptr),
+                                       opt.root_override);
 
     if (opt.mode == "list-models") {
         if (!ws.valid()) {
-            Logger::instance().line("main", "未找到 train_project 根目录，可用 --root 指定");
+            Logger::instance().line("main", "未找到项目根目录，可用 --root 指定");
             return 3;
         }
         return cmd_list_models(ws);
@@ -505,14 +600,14 @@ int main(int argc, char** argv) {
     if (opt.mode == "doctor") return cmd_doctor(ws, opt);
     if (opt.mode == "download") {
         if (!ws.valid()) {
-            Logger::instance().line("main", "未找到 train_project 根目录，可用 --root 指定");
+            Logger::instance().line("main", "未找到项目根目录，可用 --root 指定");
             return 3;
         }
         return cmd_download(ws, opt);
     }
     if (opt.mode == "export") {
         if (!ws.valid()) {
-            Logger::instance().line("main", "未找到 train_project 根目录，可用 --root 指定");
+            Logger::instance().line("main", "未找到项目根目录，可用 --root 指定");
             return 3;
         }
         return cmd_export(ws, opt);
