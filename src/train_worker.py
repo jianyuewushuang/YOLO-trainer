@@ -157,6 +157,27 @@ def fail(msg: str) -> int:
 # ---------------------------------------------------------------------------
 # 数据集
 # ---------------------------------------------------------------------------
+def as_yaml_path(p: Path) -> Path:
+    """--data 允许传数据集目录：自动在目录内查找数据集配置。
+
+    查找顺序：<dir>/dataset.yaml > <dir>/data.yaml > <dir>/*/data.yaml
+              > <dir>/datasets/dataset.yaml > <dir>/datasets/*/data.yaml
+    找不到时原样返回，由调用方报错。
+    """
+    if not p.is_dir():
+        return p
+    names = ("dataset.yaml", "dataset.yml", "data.yaml", "data.yml")
+    for root in (p, p / "datasets"):
+        for name in names:
+            cand = root / name
+            if cand.is_file():
+                return cand
+        subs = sorted([*root.glob("*/data.yaml"), *root.glob("*/data.yml")])
+        if subs:
+            return subs[0]
+    return p
+
+
 def _resolve_split_dir(base: Path, yaml_dir: Path, rel: str) -> Path:
     """把 dataset.yaml 中的 train/val 相对路径解析为绝对目录。
 
@@ -294,9 +315,9 @@ def cmd_check(args) -> int:
     except Exception as e:  # noqa: BLE001
         return fail(f"引擎依赖不完整: {e}")
 
-    yaml_path = Path(args.data) if args.data else ROOT / "datasets" / "dataset.yaml"
-    if not yaml_path.exists():
-        return fail(f"数据集配置不存在: {yaml_path}")
+    yaml_path = as_yaml_path(Path(args.data)) if args.data else ROOT / "datasets" / "dataset.yaml"
+    if not yaml_path.is_file():
+        return fail(f"数据集配置不存在: {yaml_path}（--data 可指定 yaml 文件或数据集目录）")
     ds = load_dataset_info(yaml_path)
     info["dataset"] = {
         "yaml": str(yaml_path), "nc": ds["nc"], "names": ds["names"],
@@ -360,9 +381,9 @@ def cmd_train(args) -> int:
     dir_name = DIR_NAMES[model_name]
     workers = args.workers if args.workers > 0 else min(8, os.cpu_count() or 1)
 
-    yaml_path = Path(args.data) if args.data else ROOT / "datasets" / "dataset.yaml"
-    if not yaml_path.exists():
-        return fail(f"数据集配置不存在: {yaml_path}")
+    yaml_path = as_yaml_path(Path(args.data)) if args.data else ROOT / "datasets" / "dataset.yaml"
+    if not yaml_path.is_file():
+        return fail(f"数据集配置不存在: {yaml_path}（--data 可指定 yaml 文件或数据集目录）")
     ds = load_dataset_info(yaml_path)
     if ds["stats"]["train"]["images"] == 0:
         return fail(f"训练集为空: {ds['stats']['train']['image_dir']}")

@@ -30,4 +30,10 @@ struct Workspace {
 
     // 数据集配置：优先 datasets/dataset.yaml，其次自动探测 datasets/<名称>/data.yaml
     static fs::path find_data_yaml(const fs::path& root);
+
+    // 在任意目录内查找数据集配置（--data 传目录时使用）：
+    //   <dir>/dataset.yaml > <dir>/data.yaml > <dir>/*/data.yaml
+    //   > <dir>/datasets/dataset.yaml > <dir>/datasets/*/data.yaml
+    // 都不存在时返回空路径；传入的若是文件则原样返回。
+    static fs::path find_data_yaml_in(const fs::path& dir);
 };

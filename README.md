@@ -41,6 +41,7 @@
 
 数据集配置支持两种布局，启动时自动探测：
 `datasets/dataset.yaml`（推荐），或 Roboflow 导出的 `datasets/<数据集名>/data.yaml`。
+`--data` 也可以直接指定数据集所在目录（自检与训练均支持）。
 
 ## 3. 环境要求
 
@@ -130,7 +131,7 @@ python3 -m venv .venv
 | `--batch` | 16 | 批大小 |
 | `--workers` | 自动 | DataLoader 进程数（自动 = min(8, CPU 核数)） |
 | `--val-imgsz` | 640 | 验证与 ONNX 导出尺寸 |
-| `--data` | `datasets/dataset.yaml` | 数据集配置 |
+| `--data` | 自动探测 | 数据集配置：可传 yaml 文件，也可传数据集目录（自动找 `dataset.yaml`/`data.yaml`） |
 | `--resume` | 关 | 从最近一次训练继续 |
 | `--no-interactive` | 关 | 禁用交互菜单 |
 | `--root` | 自动 | 手动指定 <path\to\your\project> 根目录 |
@@ -204,8 +205,21 @@ A：首次运行会从 GitHub 下载 COCO 预训练权重（约 5~6 MB，已缓�
 
 **Q：如何改数据集？**
 A：替换 `datasets/images/{train,val}` 与 `datasets/labels/{train,val}` 并更新
-`datasets/dataset.yaml`（`nc` 与 `names`），或用 `--data` 指向新的 yaml。
-也兼容 Roboflow 导出的 `datasets/<数据集名>/data.yaml`（启动时自动探测）。
+`datasets/dataset.yaml`（`nc` 与 `names`），或用 `--data` 指向新的 yaml / 数据集目录。
+数据集配置支持三种指定方式，自检（`doctor`）与训练（`train`）都适用：
+
+```bash
+./build/yolo_train doctor --data datasets/dataset.yaml              # 1) yaml 文件
+./build/yolo_train doctor --data datasets/RMUC-YOLO-armor.v1-test.yolo26  # 2) 数据集目录
+./build/yolo_train train --model yolov8n --data /data/my_det        # 3) 任意位置的目录
+```
+
+数据集可以放在项目外（如 `/mnt/data/...`），项目根判定只要求 `src/train_worker.py`，
+不再要求项目内存在 `datasets/`。传目录时按 `<目录>/dataset.yaml` → `<目录>/data.yaml`
+→ `<目录>/*/data.yaml` → `<目录>/datasets/dataset.yaml` → `<目录>/datasets/*/data.yaml`
+顺序查找（`.yml` 扩展名同样支持）；
+不指定 `--data` 时自动探测项目内 `datasets/` 下的配置（含 Roboflow 导出的
+`datasets/<数据集名>/data.yaml`）。
 
 **Q：Linux 上提示 “externally-managed-environment” 或缺少 venv？**
 A：不要用系统 Python 直接装依赖，脚本会自动建 `.venv`。若建 venv 失败：

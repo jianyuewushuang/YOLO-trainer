@@ -131,10 +131,23 @@ static std::string find_in_path(const std::string& name) {
     return "";
 }
 
-// 数据集配置：--data 优先，否则用项目内自动探测到的数据集
+// 数据集配置：--data 优先（可为 yaml 文件或数据集目录），否则用项目内自动探测
 static fs::path resolve_data_yaml(const Workspace& ws, const Options& opt) {
-    if (!opt.data.empty()) return fs::path(opt.data);
-    return ws.data_yaml;
+    if (opt.data.empty()) return ws.data_yaml;
+    const fs::path found = Workspace::find_data_yaml_in(fs::path(opt.data));
+    std::error_code ec;
+    const fs::path abs = fs::weakly_canonical(found, ec);  // 统一为绝对路径，日志更明确
+    return ec ? found : abs;
+}
+
+// --data 解析失败时的提示文案
+static std::string data_yaml_hint(const Options& opt) {
+    if (opt.data.empty()) return "项目内未探测到数据集配置";
+    std::error_code ec;
+    if (fs::is_directory(fs::path(opt.data), ec)) {
+        return opt.data + " 下未找到 dataset.yaml / data.yaml";
+    }
+    return "文件不存在: " + opt.data;
 }
 
 // 查找以 prefix 开头的标记行，返回其载荷（不含前缀）
@@ -240,9 +253,10 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
     if (ws.valid()) {
         log.line("doctor", "项目根目录: " + ws.root.string() + "  [OK]");
     } else {
-        log.line("doctor", "未找到项目根目录（需含 src/train_worker.py 与 "
-                           "datasets/dataset.yaml 或 datasets/*/data.yaml），"
-                           "可用 --root 指定  [FAIL]");
+        log.line("doctor", "未找到项目根目录（需含 src/train_worker.py；数据集可用 --data "
+                           "放在任意位置），可用 --root 指定  [FAIL]");
+        log.line("doctor", "可执行文件: " + self_exe_path(nullptr).string() + "  [诊断]");
+        log.line("doctor", "当前目录:   " + fs::current_path().string() + "  [诊断]");
         return 3;
     }
 
@@ -274,15 +288,17 @@ static int cmd_doctor(const Workspace& ws, const Options& opt) {
         ++problems;
     }
     const fs::path data_yaml = resolve_data_yaml(ws, opt);
-    if (fs::exists(data_yaml)) {
+    const bool data_ok = !data_yaml.empty() && fs::is_regular_file(data_yaml);
+    if (data_ok) {
         log.line("doctor", "数据集配置: " + data_yaml.string() + "  [OK]");
     } else {
-        log.line("doctor", "数据集配置缺失: " + data_yaml.string() + "  [FAIL]");
+        log.line("doctor", "数据集配置缺失: " + data_yaml_hint(opt) +
+                               "（--data 可指定 yaml 文件或数据集目录）  [FAIL]");
         ++problems;
     }
 
     // 4. 引擎自检（Python/torch/ultralytics/数据集统计/权重缓存）
-    if (fs::exists(ws.venv_python) && fs::exists(ws.worker)) {
+    if (fs::exists(ws.venv_python) && fs::exists(ws.worker) && data_ok) {
         RunResult r = run_process(ws.venv_python,
                                   {"-u", "-X", "utf8", ws.worker.string(), "check",
                                    "--data", data_yaml.string()},
@@ -433,8 +449,9 @@ static int cmd_train(const Workspace& ws, const Options& opt) {
                              "，请先运行 " + std::string(kSetupScript));
         return 3;
     }
-    if (!fs::exists(data_yaml)) {
-        log.line("main", "数据集配置不存在: " + data_yaml.string());
+    if (data_yaml.empty() || !fs::is_regular_file(data_yaml)) {
+        log.line("main", "数据集配置不存在: " + data_yaml_hint(opt) +
+                             "（--data 可指定 yaml 文件或数据集目录）");
         return 3;
     }
 

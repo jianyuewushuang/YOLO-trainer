@@ -18,31 +18,56 @@ fs::path Workspace::venv_python_path(const fs::path& root) {
 #endif
 }
 
-fs::path Workspace::find_data_yaml(const fs::path& root) {
-    std::error_code ec;
-    const fs::path def = root / "datasets" / "dataset.yaml";
-    if (fs::exists(def, ec)) return def;
+namespace {
 
-    // 兼容 Roboflow 导出布局：datasets/<数据集名>/data.yaml
-    fs::path ds_dir = root / "datasets";
+// 在 dir 内挑一个数据集 yaml：dir/<固定名> 优先，其次 dir/<子目录>/data.yaml
+// 同时兼容 .yml 扩展名（如 Roboflow 有时导出 data.yml）
+fs::path pick_data_yaml(const fs::path& dir) {
+    std::error_code ec;
+    for (const char* name : {"dataset.yaml", "dataset.yml", "data.yaml", "data.yml"}) {
+        fs::path cand = dir / name;
+        if (fs::is_regular_file(cand, ec)) return cand;
+    }
+    // Roboflow 导出布局：<数据集名>/data.yaml（多个时取字典序第一个）
     std::vector<fs::path> found;
-    if (fs::is_directory(ds_dir, ec)) {
-        for (const auto& entry : fs::directory_iterator(ds_dir, ec)) {
+    if (fs::is_directory(dir, ec)) {
+        for (const auto& entry : fs::directory_iterator(dir, ec)) {
             if (!entry.is_directory(ec)) continue;
-            fs::path cand = entry.path() / "data.yaml";
-            if (fs::exists(cand, ec)) found.push_back(cand);
+            for (const char* name : {"data.yaml", "data.yml"}) {
+                fs::path cand = entry.path() / name;
+                if (fs::is_regular_file(cand, ec)) {
+                    found.push_back(cand);
+                    break;
+                }
+            }
         }
     }
     std::sort(found.begin(), found.end());
     return found.empty() ? fs::path{} : found.front();
 }
 
+}  // namespace
+
+fs::path Workspace::find_data_yaml(const fs::path& root) {
+    return pick_data_yaml(root / "datasets");
+}
+
+fs::path Workspace::find_data_yaml_in(const fs::path& dir) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return dir;  // 已是文件（或不存在）：交给调用方校验
+
+    if (fs::path found = pick_data_yaml(dir); !found.empty()) return found;
+    // 传的是项目根目录时，数据集通常在 datasets/ 下
+    return pick_data_yaml(dir / "datasets");
+}
+
 Workspace Workspace::discover(const fs::path& exe_path, const fs::path& override_root) {
-    // 判定“项目根”的标志：存在 src/train_worker.py 且能找到数据集配置
+    // 判定“项目根”的标志：存在 src/train_worker.py。
+    // 注意：不要求项目内存在数据集配置——数据集可以用 --data 放在任意位置
+    //（如 /mnt/data/...），否则外部数据集场景会误判为“未找到项目根目录”。
     const auto is_root = [](const fs::path& p) {
         std::error_code ec;
-        return fs::exists(p / "src" / "train_worker.py", ec) &&
-               !Workspace::find_data_yaml(p).empty();
+        return fs::exists(p / "src" / "train_worker.py", ec);
     };
 
     const auto make_workspace = [](const fs::path& root) {

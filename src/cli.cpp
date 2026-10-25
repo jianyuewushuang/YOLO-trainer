@@ -122,7 +122,7 @@ void print_usage() {
         "  --batch   N        批大小（默认 16）\n"
         "  --workers N        DataLoader 进程数（默认自动）\n"
         "  --val-imgsz N      验证/导出尺寸（默认 640）\n"
-        "  --data    PATH     数据集 yaml（默认自动探测 datasets/dataset.yaml 或 datasets/*/data.yaml）\n"
+        "  --data    PATH     数据集 yaml 或数据集目录（默认自动探测 datasets/ 下的配置）\n"
         "  --weights PATH     export 模式指定 best.pt\n"
         "  --resume           从最近一次训练继续\n"
         "  --root    PATH     手动指定项目根目录\n"
