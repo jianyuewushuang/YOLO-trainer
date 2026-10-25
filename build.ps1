@@ -21,6 +21,15 @@ if (-not (Test-Path $gpp)) {
     throw "未找到 MinGW g++（MSYS2 UCRT64）。请安装 MSYS2 与 ucrt64 工具链，例如执行: pacman -S mingw-w64-ucrt-x86_64-gcc"
 }
 
+# 关键：g++ 的后端进程（cc1plus.exe）位于 lib\gcc\... 子目录，其依赖的
+# MSYS2 DLL（libisl / libmpc / libwinpthread 等）只能通过 PATH 找到。
+# 若不把工具链 bin 目录加入 PATH，cc1plus 会以 0xC0000135（DLL 未找到）
+# 静默退出，g++ 仅返回退出码 1 且不打印任何错误信息。
+$toolchainBin = Split-Path -Parent $gpp
+if (($env:PATH -split ';') -notcontains $toolchainBin) {
+    $env:PATH = "$toolchainBin;$env:PATH"
+}
+
 New-Item -ItemType Directory -Force (Join-Path $root "build") | Out-Null
 
 $srcs = Get-ChildItem -Path (Join-Path $root "src") -Filter *.cpp | ForEach-Object { $_.FullName }
